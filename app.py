@@ -31,18 +31,6 @@ with col2:
 # Initialize the Gemma model
 llm = ChatGroq(groq_api_key=groq_api_key, model_name="gemma2-9b-it")
 
-# Chat prompt template for conversation
-prompt_template = ChatPromptTemplate.from_template(
-"""
-You are a conversational assistant. Answer the user's questions based on the provided documents and conversation context.
-Please provide accurate and clear responses.
-<context>
-{context}
-</context>
-User's Question: {input}
-"""
-)
-
 # Define the directory where uploaded files will be stored
 UPLOAD_DIR = r"D:\LevelWise_RAG\research_papers"  # Update this path as needed
 
@@ -58,7 +46,12 @@ with st.sidebar:
     # Button to trigger document loading and vector store creation
     if st.button("Create Vector Store"):
         if uploaded_files:
+            progress_bar = st.progress(0)  # Initialize the progress bar
+
             st.session_state.docs = []
+            total_steps = len(uploaded_files) + 3  # Define total steps for progress (file saving, document loading, embeddings, vector store creation)
+            current_step = 0
+
             for uploaded_file in uploaded_files:
                 # Create the file path for storing the file
                 file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
@@ -71,12 +64,27 @@ with st.sidebar:
                 loader = PyPDFLoader(file_path)
                 st.session_state.docs.extend(loader.load())
 
-            # Embed and create vector store
+                # Update progress after each file is processed
+                current_step += 1
+                progress_bar.progress(current_step / total_steps)  # Update the progress
+
+            # Embedding the documents
             st.session_state.embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+            current_step += 1
+            progress_bar.progress(current_step / total_steps)  # Update the progress
+
+            # Splitting the documents into chunks
             st.session_state.text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
             st.session_state.final_documents = st.session_state.text_splitter.split_documents(st.session_state.docs)  # Split into chunks
-            st.session_state.vectors = FAISS.from_documents(st.session_state.final_documents, st.session_state.embeddings)  # Create vector store
+            current_step += 1
+            progress_bar.progress(current_step / total_steps)  # Update the progress
+
+            # Create the vector store
+            st.session_state.vectors = FAISS.from_documents(st.session_state.final_documents, st.session_state.embeddings)
             st.session_state.docs_loaded = True
+            current_step += 1
+            progress_bar.progress(current_step / total_steps)  # Complete the progress
+
             st.sidebar.success("Vector store created successfully!")
         else:
             st.sidebar.warning("Please upload files before creating the vector store.")
@@ -85,7 +93,7 @@ with st.sidebar:
 if "docs_loaded" in st.session_state and st.session_state.docs_loaded:
     st.write("Vector store is ready!")
 
-# Input for the user's question with chat history
+# Initialize message history if not already
 if "messages" not in st.session_state:
     st.session_state.messages = []  # Initialize chat history
 
@@ -93,6 +101,14 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+
+# Function to build chat context from message history
+def build_chat_context():
+    context = ""
+    for msg in st.session_state.messages:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        context += f"{role}: {msg['content']}\n"
+    return context
 
 # User input box for questions
 if prompt := st.chat_input("Ask your question:"):
@@ -102,6 +118,20 @@ if prompt := st.chat_input("Ask your question:"):
         st.markdown(prompt)
 
     if "vectors" in st.session_state:
+        # Build conversation history as context
+        chat_context = build_chat_context()
+
+        # Update prompt template to include conversation context
+        prompt_template = ChatPromptTemplate.from_template(
+        """
+        You are a conversational assistant. Answer the user's questions based on the provided documents and conversation context.
+        Please provide accurate and clear responses.
+        <context>
+        {context}
+        </context>
+        User's Question: {input}
+        """)
+
         # Proceed with processing the user's question
         document_chain = create_stuff_documents_chain(llm, prompt_template)
         retriever = st.session_state.vectors.as_retriever()
@@ -109,7 +139,7 @@ if prompt := st.chat_input("Ask your question:"):
 
         # Process user question with RAG and display the response
         start_time = time.process_time()
-        response = retrieval_chain.invoke({'input': prompt})
+        response = retrieval_chain.invoke({'input': prompt, 'context': chat_context})
         response_time = time.process_time() - start_time
 
         # Display model response in chat format
@@ -126,7 +156,7 @@ if prompt := st.chat_input("Ask your question:"):
                 st.write("--------------------------------")
     else:
         # If vector store is not initialized, inform the user
-        assistant_message = "Please upload your documents and press 'Load Documents and Create Vector Store' before asking questions."
+        assistant_message = "Hi there! Please upload your documents and press 'Create Vector Store' before asking questions."
         st.session_state.messages.append({"role": "assistant", "content": assistant_message})
         with st.chat_message("assistant"):
             st.markdown(assistant_message)
