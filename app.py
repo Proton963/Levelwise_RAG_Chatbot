@@ -29,7 +29,7 @@ col1, col2 = st.columns([1, 8])  # Adjust the column width ratio if necessary
 with col1:
     st.image(logo, width=80)  # Adjust width as necessary
 with col2:
-    st.title("Gemma Model Conversational RAG Chatbot")
+    st.title("Levelwise RAG Chatbot")
 
 # Initialize the Gemma model
 llm = ChatGroq(groq_api_key=groq_api_key, model_name="gemma2-9b-it")
@@ -68,7 +68,7 @@ with st.sidebar:
             progress_bar.progress(current_step / total_steps)
 
             # Splitting the documents into chunks
-            st.session_state.text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
+            st.session_state.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             st.session_state.final_documents = st.session_state.text_splitter.split_documents(st.session_state.docs)
             current_step += 1
             progress_bar.progress(current_step / total_steps)
