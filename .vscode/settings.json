@@ -1,0 +1,8 @@
+{
+    "python.analysis.extraPaths": [
+        "./Document_Handler",
+        "./Embedding_Manager",
+        "./Chat_Manager",
+        "./Ui"
+    ]
+}
