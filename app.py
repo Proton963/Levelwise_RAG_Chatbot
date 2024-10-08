@@ -1,7 +1,7 @@
 import os
 import streamlit as st
 from document_handler.document_handler import load_documents
-from embedding_manager.embedding_manager import create_embeddings
+from embedding_manager.embedding_manager import create_embeddings_in_batches
 from chat_manager.chat_manager import build_chat_history, get_retrieval_chain
 from ui.ui import setup_sidebar, display_project_title_and_logo, setup_sidebar_progress_bar, show_vector_store_ready, display_chat_history, display_chat_message
 from langchain_groq import ChatGroq
@@ -26,21 +26,14 @@ if uploaded_files and create_vector_store_button:
     # Process the documents
     documents = load_documents(uploaded_files, upload_dir="uploads")
     
-    # Simulate progress (you can update this to match actual steps)
-    total_steps = 3  # Define the total number of steps in the process
-    current_step = 1
-    progress_bar.progress(current_step / total_steps)  # Update progress
-
-    # Create embeddings and vector store
-    vector_store = create_embeddings(documents)
-    current_step += 1
-    progress_bar.progress(current_step / total_steps)
-
-    # Store vector store in session state
+    # Use batch and parallel processing to create embeddings
+    batch_size = 5  # Define batch size based on document size and system capacity
+    vector_store = create_embeddings_in_batches(documents, batch_size=batch_size)  # Create vector store
+    
+    # Store the final vector store in session state
     st.session_state.vector_store = vector_store
     st.session_state.docs_loaded = True
-    current_step += 1
-    progress_bar.progress(current_step / total_steps)
+    progress_bar.progress(100)  # Show full progress
 
     # Indicate that the vector store is ready
     show_vector_store_ready()
@@ -85,4 +78,6 @@ if user_input:
 
 
 
+
         
+#D:/LevelWise_RAG/assets/LevelWiseRAG.png
