@@ -8,6 +8,7 @@ from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 
 # Load environment variables
+# Load environment variables
 load_dotenv()
 groq_api_key = os.getenv('GROQ_API_KEY')
 llm = ChatGroq(groq_api_key=groq_api_key, model_name="gemma2-9b-it")
@@ -28,7 +29,7 @@ if uploaded_files and create_vector_store_button:
     
     # Use batch and parallel processing to create embeddings
     batch_size = 5  # Define batch size based on document size and system capacity
-    vector_store = create_embeddings_in_batches(documents, batch_size=batch_size)  # Create vector store
+    vector_store = create_embeddings_in_batches(documents, batch_size=batch_size, n_jobs=-1)  # Updated to use joblib-based function
     
     # Store the final vector store in session state
     st.session_state.vector_store = vector_store
@@ -42,9 +43,10 @@ if uploaded_files and create_vector_store_button:
 if "docs_loaded" not in st.session_state:
     st.session_state.docs_loaded = False
 
-# Initialize chat history if not already
+# Initialize chat history with a welcome message if not already present
 if "messages" not in st.session_state:
     st.session_state.messages = []
+    st.session_state.messages.append({"role": "assistant", "content": "How can I help you?"})  # Add initial AI message
 
 # Display chat history
 display_chat_history(st.session_state.messages)
@@ -75,7 +77,6 @@ if user_input:
         # Append the assistant's response to the chat history
         st.session_state.messages.append({"role": "assistant", "content": answer})
         display_chat_message("assistant", answer)
-
 
 
 
