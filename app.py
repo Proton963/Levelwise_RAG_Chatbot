@@ -29,7 +29,7 @@ if uploaded_files and create_vector_store_button:
     
     # Use batch and parallel processing to create embeddings
     batch_size = 5  # Define batch size based on document size and system capacity
-    vector_store = create_embeddings_in_batches(documents, batch_size=batch_size, n_jobs=-1)  # Updated to use joblib-based function
+    vector_store = create_embeddings_in_batches(documents, batch_size=batch_size)  # Updated to use joblib-based function
     
     # Store the final vector store in session state
     st.session_state.vector_store = vector_store
@@ -57,6 +57,8 @@ user_input = st.chat_input("Ask your question:")
 if user_input:
     if not st.session_state.docs_loaded:
         assistant_message = "Hi there! Please upload your document to start conversing."
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        display_chat_message("user", user_input)
         st.session_state.messages.append({"role": "assistant", "content": assistant_message})
         display_chat_message("assistant", assistant_message)
     else:
