@@ -6,12 +6,16 @@ from chat_manager.chat_manager import build_chat_history, get_retrieval_chain
 from ui.ui import setup_sidebar, display_project_title_and_logo, setup_sidebar_progress_bar, show_vector_store_ready, display_chat_history, display_chat_message
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
-
+from pydantic import SecretStr
 # Load environment variables
 # Load environment variables
 load_dotenv()
 groq_api_key = os.getenv('GROQ_API_KEY')
-llm = ChatGroq(groq_api_key=groq_api_key, model_name="gemma2-9b-it")
+if groq_api_key is not None:
+    llm = ChatGroq(api_key=SecretStr(groq_api_key), model="gemma2-9b-it", stop_sequences=[])
+else:
+    st.error("GROQ_API_KEY environment variable not found. Please set it.")
+    st.stop()
 
 # Display the project title and logo
 logo_path = "D:/LevelWise_RAG/assets/LevelWiseRAG.png"  # Adjust the path if necessary
