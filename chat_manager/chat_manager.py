@@ -12,27 +12,31 @@ def build_chat_history(messages):
             chat_history.append(AIMessage(content=msg["content"]))
     return chat_history
 
-def get_retrieval_chain(llm, retriever):
+def get_retrieval_chain(llm, retriever, current_user=None):
+    # Build user context string if provided
+    user_context = ""
+    if current_user:
+        user_context = f"User Role: {current_user.get('role')}, Username: {current_user.get('username')}"
+        if current_user.get("department"):
+            user_context += f", Department: {current_user.get('department')}"
+    
     history_aware_retriever = create_history_aware_retriever(
         llm, 
-        retriever,  # Use the passed retriever directly
+        retriever,
         ChatPromptTemplate.from_messages([
-            ("system", "Given a chat history and the latest user question which might reference context in the chat history, formulate a standalone question."),
+            ("system", f"{user_context}\nGiven a chat history and the latest user question, formulate a standalone question."),
             MessagesPlaceholder("chat_history"),
             ("human", "{input}")
         ])
     )
     
     system_prompt = (
-        "You are an assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question."
-        "\n\n{context}"
+        f"{user_context}\nYou are an assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question.\n\n{{context}}"
     )
-    qa_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}")
-        ]
-    )
+    qa_prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}")
+    ])
     question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
     return create_retrieval_chain(history_aware_retriever, question_answer_chain)
