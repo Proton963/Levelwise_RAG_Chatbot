@@ -12,10 +12,10 @@ def build_chat_history(messages):
             chat_history.append(AIMessage(content=msg["content"]))
     return chat_history
 
-def get_retrieval_chain(llm, vector_store):
+def get_retrieval_chain(llm, retriever):
     history_aware_retriever = create_history_aware_retriever(
         llm, 
-        vector_store.as_retriever(),
+        retriever,  # Use the passed retriever directly
         ChatPromptTemplate.from_messages([
             ("system", "Given a chat history and the latest user question which might reference context in the chat history, formulate a standalone question."),
             MessagesPlaceholder("chat_history"),
