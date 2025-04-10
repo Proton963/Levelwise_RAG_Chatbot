@@ -8,8 +8,8 @@ dummy_users = {
     "Ishaan Gupta": {"password": "password123", "role": "Student", "department": "ECE"},
     "Manish Kumar": {"password": "profpass", "role": "Professor", "department": "ME"},
     "Sneha Kulkarni": {"password": "profpass", "role": "Professor", "department": "CSE"},
-    "Amit Sharma": {"password": "hodpass", "role": "HOD", "department": "ECE"},
-    "Priya Verma": {"password": "hodpass", "role": "HOD", "department": "CSE"},
+    "Amit Sharma": {"password": "hodpass", "role": "HOD", "department": "CSE"},
+    "Priya Verma": {"password": "hodpass", "role": "HOD", "department": "ECE"},
     "Rajesh Singh": {"password": "hodpass", "role": "HOD", "department": "ME"}
 }
 
