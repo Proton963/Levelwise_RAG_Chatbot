@@ -23,7 +23,8 @@ from ui.ui import (
     display_chat_history,
     display_chat_message
 )
-from access_control.access_control import store_uploaded_file
+# from access_control.access_control import store_uploaded_file
+from embedding_manager.embedding_manager import process_uploaded_file_to_faiss
 from pydantic import SecretStr
 from typing import Any, Dict    
 
@@ -76,8 +77,8 @@ all_mongodb_indexes = load_or_create_faiss_indexes(
     mongo_uri=mongo_uri,
     mongo_db_name=mongo_db_name,
     collections_to_index=collections_to_index,
-    _embedding_model=embedding_model,
-    _splitter=splitter 
+    _embedding_model=embedding_model, # Use normal name in call
+    _splitter=splitter              # Use normal name in call
 )
 print(f"DEBUG: Indexes returned from mongo_handler: {list(all_mongodb_indexes.keys())}")
 
@@ -101,58 +102,90 @@ print("DEBUG: Filtered indexes based on user role:", filtered_indexes)
 # -----------------------------------------------------------------------------
 # 7. Build Retrievers with Department Filter (applied after caching)
 # -----------------------------------------------------------------------------
-retrievers = []
-DEFAULT_RETRIEVER_K = 20
+print("DEBUG: --- Setting up Retrievers (Section 7) ---")
+retrievers = [] # Initialize list to hold all retrievers
+DEFAULT_RETRIEVER_K = 20 # Default K for broader MongoDB search
+UPLOADED_DOC_K = 5 # K for uploaded doc search (can be different)
 
-# Get user role and department once
 user_role = current_user.get("role")
-user_dept = current_user.get("department") # Will be None if not applicable
+user_dept = current_user.get("department")
 
-print(f"DEBUG: Current User Role: {user_role}, Department: {user_dept}. Using default K={DEFAULT_RETRIEVER_K} for all retrievers.")
+print(f"DEBUG: Current User Role: {user_role}, Department: {user_dept}. Base K={DEFAULT_RETRIEVER_K}")
 
+# --- Create Retrievers for MongoDB Indexes ---
+print("DEBUG: Creating retrievers for MongoDB indexes...")
 for key, vs in filtered_indexes.items():
     if vs is not None:
-        # Initialize search_kwargs with the new higher default K for everyone
-        search_kwargs: Dict[str, Any] = {'k': DEFAULT_RETRIEVER_K}
+        # Initialize search_kwargs with default K
+        # Note: Assuming HOD might need higher K, adjust if using single DEFAULT_RETRIEVER_K
+        current_k = DEFAULT_RETRIEVER_K # Start with default
+        # Example: If HOD needs more from MongoDB specifically
+        # if user_role == "HOD":
+        #    current_k = HOD_RETRIEVER_K # Defined elsewhere
 
-        # --- Determine if Filter needs to be applied ---
+        search_kwargs: Dict[str, Any] = {'k': current_k}
+
+        # Determine if Filter needs to be applied (for non-HOD roles)
         apply_filter = False
-        # Filter only applies to specific non-HOD roles querying specific indexes
         if user_role in ["Student", "Professor"] and key in ["students", "professors"]:
-             if user_dept: # Ensure the user has a department assigned
+             if user_dept:
                  search_kwargs["filter"] = {"department": user_dept}
                  apply_filter = True
                  print(f"DEBUG: Applying department filter '{user_dept}' for role '{user_role}' on index '{key}'. Final kwargs: {search_kwargs}")
              else:
-                 # Log a warning if a role expected to have a department doesn't
-                 print(f"WARN: Role '{user_role}' should have department for filtering index '{key}', but none found. Using kwargs: {search_kwargs}")
+                 print(f"WARN: Role '{user_role}' needs department for filtering '{key}'. No filter applied. Kwargs: {search_kwargs}")
         else:
             # No filter for HOD or other combinations
-            print(f"DEBUG: No department filter applied for role '{user_role}' on index '{key}'. Using kwargs: {search_kwargs}")
+            print(f"DEBUG: No department filter needed for role '{user_role}' on index '{key}'. Using kwargs: {search_kwargs}")
 
-        # --- Create the retriever ---
+        # Create and add the retriever for this MongoDB index
         try:
-            # Pass the search_kwargs dictionary containing 'k' and potentially 'filter'
             retriever = vs.as_retriever(search_kwargs=search_kwargs)
             retrievers.append(retriever)
-            print(f"DEBUG: Successfully created retriever for index '{key}'.")
+            print(f"DEBUG: Successfully created retriever for MongoDB index '{key}'.")
         except Exception as e:
-             # Log errors during retriever creation
-             print(f"ERROR: Failed to create retriever for index '{key}' with kwargs {search_kwargs}: {e}")
+             print(f"ERROR: Failed to create retriever for MongoDB index '{key}': {e}")
+             traceback.print_exc() # Added traceback for detail
+# --- End MongoDB Retriever Loop ---
 
 
-# Check if any retrievers were actually created before making the ensemble
-if not retrievers:
-    st.error("No valid retrievers were created. Cannot proceed with RAG chain.")
-    # Consider st.stop() or other error handling
-    ensemble_retriever = None
+# --- ADDED: Create Retriever for Uploaded Document (If Exists in Session) ---
+print("DEBUG: Checking for uploaded document vector store in session state...")
+if "uploaded_doc_vs" in st.session_state and st.session_state.uploaded_doc_vs is not None:
+    print("DEBUG: Found uploaded document VS. Creating its retriever...")
+    try:
+        # Create a retriever for the uploaded document's vector store
+        uploaded_doc_retriever = st.session_state.uploaded_doc_vs.as_retriever(
+            search_kwargs={'k': UPLOADED_DOC_K} # Use specific K for uploaded docs
+        )
+        # Add it to the list of retrievers
+        retrievers.append(uploaded_doc_retriever)
+        print(f"DEBUG: Successfully created and added retriever for uploaded document (k={UPLOADED_DOC_K}).")
+    except Exception as e:
+        print(f"ERROR: Failed to create retriever for uploaded document: {e}")
+        traceback.print_exc() # Added traceback
 else:
-    # Create the EnsembleRetriever if retrievers list is not empty
-    ensemble_retriever = EnsembleRetriever(
-        retrievers=retrievers,
-        weights=[1.0 for _ in retrievers] # Using simple equal weighting
-    )
-    print(f"DEBUG: EnsembleRetriever created with {len(retrievers)} retriever(s).")
+     print("DEBUG: No uploaded document vector store found in session state.")
+# --- END ADDED ---
+
+
+# --- Create the EnsembleRetriever ---
+ensemble_retriever = None # Initialize as None
+if not retrievers:
+    # Only show error if NO retrievers were created at all
+    st.error("No data sources available (MongoDB or Uploaded File). Cannot answer questions.")
+    print("ERROR: No retrievers available to create EnsembleRetriever.")
+else:
+    # If there's at least one retriever, create the ensemble
+    # Assign equal weights for simplicity, can be adjusted for relevance tuning
+    weights = [1.0] * len(retrievers)
+    try:
+        ensemble_retriever = EnsembleRetriever(retrievers=retrievers, weights=weights)
+        print(f"DEBUG: EnsembleRetriever created successfully with {len(retrievers)} retriever(s).")
+    except Exception as e:
+        st.error("Failed to create the combined retriever. Functionality may be limited.")
+        print(f"ERROR: Failed to create EnsembleRetriever: {e}")
+        traceback.print_exc()
 
 # -----------------------------------------------------------------------------
 # 8. Display Title/Logo on Main Page
@@ -162,11 +195,73 @@ display_project_title_and_logo(logo_path)
 # -----------------------------------------------------------------------------
 # 9. Sidebar: File Upload with Metadata Storage
 # -----------------------------------------------------------------------------
-uploaded_file = st.sidebar.file_uploader("Upload a document (PDF, TXT, Excel, DOCS, CSV)", type=["pdf", "txt", "xlsx", "doc", "csv"])
-if uploaded_file:
-    file_info = store_uploaded_file(uploaded_file, current_user)
-    st.sidebar.success(f"File '{file_info['filename']}' uploaded successfully!")
-    print(f"DEBUG: File '{file_info['filename']}' uploaded by {current_user.get('username')}.")
+st.sidebar.header("Document Q&A")
+uploaded_file = st.sidebar.file_uploader(
+     "Upload PDF, TXT, DOCX, CSV, XLSX",
+     type=["pdf", "txt", "docx", "csv", "xlsx"],
+     key="file_uploader_key" # Use a unique key
+)
+
+# Clear related session state if file is removed or changed
+if uploaded_file is None:
+    if "processed_file_id" in st.session_state:
+         print("DEBUG: Clearing uploaded file session state as file is removed.")
+         del st.session_state["processed_file_id"]
+    if "uploaded_doc_vs" in st.session_state:
+         del st.session_state["uploaded_doc_vs"]
+         # Optional: Rerun if you want the retriever to update immediately on file removal
+         # st.rerun()
+
+if uploaded_file is not None:
+    file_name = uploaded_file.name
+    # Create a unique ID for the uploaded file instance to detect changes
+    session_file_id = f"{file_name}_{uploaded_file.size}_{uploaded_file.type}"
+
+    # Process only if it's a new file upload compared to what's processed in session
+    if st.session_state.get("processed_file_id") != session_file_id:
+        st.sidebar.info(f"Processing '{file_name}'...")
+        print(f"DEBUG: New file detected, calling embedding_manager: {file_name}")
+        try:
+            # Ensure embedding_model and splitter are available (should be from Section 4)
+            if 'embedding_model' not in locals() or embedding_model is None:
+                 raise ValueError("Embedding model is not ready.")
+            if 'splitter' not in locals() or splitter is None:
+                 raise ValueError("Text splitter is not ready.")
+
+            # Call the function from embedding_manager to handle all processing
+            with st.spinner(f"Processing {file_name}... Please wait."):
+                 faiss_index = process_uploaded_file_to_faiss(
+                      uploaded_file,
+                      embedding_model,
+                      splitter
+                 )
+
+            if faiss_index:
+                # Store the created index in session state
+                st.session_state.uploaded_doc_vs = faiss_index
+                # Mark this specific file instance as processed
+                st.session_state.processed_file_id = session_file_id
+                st.session_state.processed_file_name = file_name # Store name if needed for display
+                st.sidebar.success(f"✅ '{file_name}' processed and ready!")
+                print(f"DEBUG: Index for '{file_name}' received from embedding_manager.")
+                # IMPORTANT: Rerun the script to update the ensemble_retriever (in Section 7)
+                st.rerun()
+            else:
+                st.sidebar.error(f"Failed to process '{file_name}'. Check logs.")
+                # Clear potentially outdated state
+                st.session_state.uploaded_doc_vs = None
+                st.session_state.processed_file_id = None
+
+        except Exception as e:
+            st.sidebar.error(f"Error during file processing: {e}")
+            print(f"ERROR processing file '{file_name}': {e}")
+            traceback.print_exc()
+            # Clear state on error
+            st.session_state.uploaded_doc_vs = None
+            st.session_state.processed_file_id = None
+    else:
+        # File already processed in this session, do nothing or show confirmation
+        st.sidebar.info(f"'{st.session_state.get('processed_file_name', 'File')}' is active for Q&A.")
 
 # -----------------------------------------------------------------------------
 # 10. Initialize Session State for Chat Messages

@@ -6,3 +6,9 @@ faiss-cpu
 langchain_google_genai
 pydantic
 pymongo
+langchain-community  
+python-docx 
+pandas 
+openpyxl 
+xlrd
+unstructured[docx,xlsx,pdf,csv]
