@@ -6,6 +6,7 @@ from PIL import Image
 dummy_users = {
     "Rohit Jain": {"password": "password123", "role": "Student", "department": "CSE"},
     "Ishaan Gupta": {"password": "password123", "role": "Student", "department": "ECE"},
+    "Prateek Mishra": {"password": "password123", "role": "Student", "department": "ME"},
     "Manish Kumar": {"password": "profpass", "role": "Professor", "department": "ME"},
     "Sneha Kulkarni": {"password": "profpass", "role": "Professor", "department": "CSE"},
     "Amit Sharma": {"password": "hodpass", "role": "HOD", "department": "CSE"},
@@ -76,6 +77,43 @@ def display_user_info():
         st.sidebar.markdown(f"**User:** {user['username']}  \n**Department:** {user['department']}")
     else:
         st.sidebar.markdown("**Not logged in**")
+
+
+def display_marks_upload_section_sidebar():
+    """
+    Displays the marks file upload section in the sidebar (only for Professors/HODs).
+    Returns a tuple (uploaded_file, subject) if the upload button is clicked,
+    otherwise returns None.
+    """
+    if "current_user" not in st.session_state:
+        st.error("User not logged in.")
+        return None
+
+    user = st.session_state.current_user
+    if user.get("role") not in ["Professor", "HOD"]:
+        st.sidebar.warning("You are not authorized to upload marks files.")
+        return None
+
+    st.sidebar.header("Upload Marks File")
+    st.sidebar.markdown("Please provide the marks file along with the subject name.(For multiple subjects, separate with commas)")
+
+    subject = st.sidebar.text_input("Subject for the marks file", key="marks_subject_sidebar")
+    marks_file = st.sidebar.file_uploader(
+        "Upload marks file to Database", 
+        type=["pdf", "xlsx", "csv", "docx"],
+        key="marks_file_sidebar"
+    )
+
+    if st.sidebar.button("Upload Marks File", key="marks_upload_button_sidebar"):
+        if marks_file is None:
+            st.sidebar.error("No file selected! Please choose a marks file to upload.")
+            return None
+        if not subject.strip():
+            st.sidebar.error("Please enter a subject for the marks file.")
+            return None
+        return marks_file, subject
+    
+    return None
 
 def setup_sidebar():
     st.sidebar.header("Documents")

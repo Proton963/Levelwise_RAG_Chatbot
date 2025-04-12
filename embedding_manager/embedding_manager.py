@@ -1,7 +1,7 @@
 import os
 import tempfile
 import traceback
-import concurrent.futures # Import for parallel processing
+import concurrent.futures  # Import for parallel processing
 from typing import List, Any, Optional, Tuple, Iterable
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -11,6 +11,12 @@ from langchain_community.document_loaders import (
     PyPDFLoader, TextLoader, UnstructuredWordDocumentLoader,
     CSVLoader, UnstructuredExcelLoader
 )
+import streamlit as st
+from pathlib import Path  # For file path manipulation
+
+# Define a directory to store the FAISS indexes
+FAISS_INDEX_DIR = Path("./faiss_indexes")
+FAISS_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- File Loading Helper (Same as before) ---
 def _load_documents_from_file(file_path: str, file_extension: str, splitter: RecursiveCharacterTextSplitter) -> List[Document]:
@@ -26,25 +32,25 @@ def _load_documents_from_file(file_path: str, file_extension: str, splitter: Rec
             loader = TextLoader(file_path, encoding='utf-8')
             documents = loader.load_and_split(text_splitter=splitter)
         elif file_extension == ".docx":
-             loader = UnstructuredWordDocumentLoader(file_path)
-             documents = loader.load_and_split(text_splitter=splitter)
+            loader = UnstructuredWordDocumentLoader(file_path)
+            documents = loader.load_and_split(text_splitter=splitter)
         elif file_extension == ".csv":
-             loader = CSVLoader(file_path)
-             documents = loader.load() # May need custom splitting logic for rows
+            loader = CSVLoader(file_path)
+            documents = loader.load()  # May need custom splitting logic for rows
         elif file_extension == ".xlsx":
-              loader = UnstructuredExcelLoader(file_path, mode="elements")
-              documents = loader.load_and_split(text_splitter=splitter)
+            loader = UnstructuredExcelLoader(file_path, mode="elements")
+            documents = loader.load_and_split(text_splitter=splitter)
         else:
-             print(f"ERROR: Unsupported file type '{file_extension}' in loader.")
-             raise ValueError(f"Unsupported file type: {file_extension}")
+            print(f"ERROR: Unsupported file type '{file_extension}' in loader.")
+            raise ValueError(f"Unsupported file type: {file_extension}")
         print(f"DEBUG (embedding_manager): Loaded {len(documents)} document chunks.")
         return documents
     except Exception as e:
-         print(f"ERROR (embedding_manager): Failed during document loading for {file_path}: {e}")
-         traceback.print_exc()
-         return []
+        print(f"ERROR (embedding_manager): Failed during document loading for {file_path}: {e}")
+        traceback.print_exc()
+        return []
 
-# --- Batching Helpers ---
+# --- Batching Helpers (Same as before) ---
 def _split_texts_into_batches(texts: List[str], batch_size: int) -> Iterable[List[str]]:
     """Splits a list of texts into batches."""
     if not texts:
@@ -64,7 +70,7 @@ def _embed_text_batch(text_batch: List[str], embedding_model: Any) -> List[List[
         else:
             print(f"WARN (embedding_manager): Embedding count mismatch for batch. Got {len(embeddings)}, expected {len(text_batch)}. Returning partial/empty.")
             # Handle mismatch - return empties for safety, or try to align based on available data
-            return [[] for _ in text_batch] # Safest default: return list of empty lists on mismatch
+            return [[] for _ in text_batch]  # Safest default: return list of empty lists on mismatch
     except Exception as e:
         print(f"ERROR (embedding_manager): Embedding batch failed: {e}. Returning empty lists.")
         # Return empty lists matching the batch size on error
@@ -72,15 +78,17 @@ def _embed_text_batch(text_batch: List[str], embedding_model: Any) -> List[List[
 
 # --- Main function with Batch Processing ---
 def process_uploaded_file_to_faiss(
-    uploaded_file: Any, # Streamlit UploadedFile object
-    embedding_model: Any, # Pre-initialized embedding model from app.py
-    splitter: RecursiveCharacterTextSplitter, # Pre-initialized splitter from app.py
-    batch_size: int = 32, # How many texts to send in one API call (adjust based on performance/API limits)
-    max_workers: Optional[int] = 4 # Number of parallel threads for API calls (adjust based on CPU/network)
+    uploaded_file: Any,  # Streamlit UploadedFile object
+    embedding_model: Any,  # Pre-initialized embedding model from app.py
+    splitter: RecursiveCharacterTextSplitter,  # Pre-initialized splitter from app.py
+    user_role: str,  # Add user role to determine storage
+    user_dept: Optional[str] = None, # Add user department for filename
+    batch_size: int = 32,  # How many texts to send in one API call (adjust based on performance/API limits)
+    max_workers: Optional[int] = 4  # Number of parallel threads for API calls (adjust based on CPU/network)
 ) -> Optional[FAISS]:
     """
     Reads file, loads/chunks, embeds content IN BATCHES (potentially parallel),
-    and returns a FAISS index, or None on failure.
+    and returns a FAISS index, or None on failure. Saves marks index to disk.
     """
     faiss_index = None
     tmp_file_path = None
@@ -103,8 +111,8 @@ def process_uploaded_file_to_faiss(
             # 3. Prepare list of all texts to be embedded
             all_texts = [doc.page_content for doc in documents if doc.page_content and isinstance(doc.page_content, str)]
             if not all_texts:
-                 print("ERROR (embedding_manager): No valid text content found after loading.")
-                 raise ValueError("No text content extracted from file.")
+                print("ERROR (embedding_manager): No valid text content found after loading.")
+                raise ValueError("No text content extracted from file.")
 
             print(f"DEBUG (embedding_manager): Starting embedding for {len(all_texts)} chunks in batches of {batch_size}...")
             all_embeddings = []
@@ -132,36 +140,41 @@ def process_uploaded_file_to_faiss(
             print(f"DEBUG (embedding_manager): Total embeddings collected: {len(all_embeddings)}. Expected approx: {len(all_texts)}. Failed batches: {failed_batches}")
 
             # 4. Create FAISS Index
-            # Important: If any batch failed, len(all_embeddings) might not equal len(all_texts)
-            # We should only index texts that were successfully embedded.
-            # Rebuild the text list based on successful embeddings if needed, or filter pairs.
-            # Simple approach: Ensure counts match before proceeding.
             if all_texts and all_embeddings and len(all_texts) == len(all_embeddings):
                 try:
                     print(f"DEBUG (embedding_manager): Creating FAISS index from {len(all_texts)} text/embedding pairs...")
                     text_embedding_pairs = list(zip(all_texts, all_embeddings))
                     faiss_index = FAISS.from_embeddings(text_embedding_pairs, embedding_model)
                     print("DEBUG (embedding_manager): FAISS index created successfully.")
+
+                    # 5. Save FAISS index to disk if it's a marks file uploaded by Professor/HOD
+                    if user_role in ["Professor", "HOD"] and "marks" in file_name.lower():
+                        if user_dept:
+                            index_filename = f"marks_index_{user_dept}.faiss"
+                            index_path = FAISS_INDEX_DIR / index_filename
+                            FAISS.save_local(faiss_index, index_path.as_posix())
+                            print(f"DEBUG (embedding_manager): FAISS index saved to disk: {index_path}")
+                        else:
+                            print(f"WARN (embedding_manager): User department not available, cannot save marks index with department name.")
+
                 except Exception as e:
-                    print(f"ERROR (embedding_manager): creating FAISS index: {e}")
+                    print(f"ERROR (embedding_manager): creating/saving FAISS index: {e}")
                     traceback.print_exc()
             else:
                 # Log mismatch for debugging
                 print(f"ERROR (embedding_manager): Mismatch between texts ({len(all_texts)}) and collected embeddings ({len(all_embeddings)}). Cannot create FAISS index reliably.")
-
         else:
-             print(f"WARN (embedding_manager): No documents loaded from file {file_name}.")
-
+            print(f"WARN (embedding_manager): No documents loaded from file {file_name}.")
     except Exception as e:
-         print(f"ERROR (embedding_manager): processing file '{file_name}': {e}")
-         traceback.print_exc()
+        print(f"ERROR (embedding_manager): processing file '{file_name}': {e}")
+        traceback.print_exc()
     finally:
-         # 5. Clean up temporary file
-         if tmp_file_path and os.path.exists(tmp_file_path):
-             try:
-                 os.remove(tmp_file_path)
-                 print(f"DEBUG (embedding_manager): Removed temp file: {tmp_file_path}")
-             except Exception as e_rem:
-                 print(f"ERROR (embedding_manager): removing temp file {tmp_file_path}: {e_rem}")
+        # 5. Clean up temporary file
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            try:
+                os.remove(tmp_file_path)
+                print(f"DEBUG (embedding_manager): Removed temp file: {tmp_file_path}")
+            except Exception as e_rem:
+                print(f"ERROR (embedding_manager): removing temp file {tmp_file_path}: {e_rem}")
 
     return faiss_index

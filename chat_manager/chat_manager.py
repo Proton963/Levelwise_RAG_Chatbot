@@ -26,9 +26,15 @@ def get_prompt_components(current_user: Dict[str, Any]) -> Tuple[str, str]:
     # Use the latest refined base instructions
     base_instructions = (
         "Answer strictly based on the provided context documents.\n"
-        "If the question asks 'how many' or for a count, accurately count the relevant items based *only* on the documents provided in the context. State the count clearly in a complete sentence (e.g., 'Based on the provided documents, there are X students.' or 'There are Y professors in the provided context.').\n"
+        "If the question asks 'how many' or for a count, accurately count the relevant items based *only* on the documents provided in the context. "
+        "State the count clearly in a complete sentence (e.g., 'Based on the provided documents, there are X students.' or 'There are Y professors in the provided context.').\n"
         "When asked to count specific items (like 'students' or 'professors'), first identify the documents in the context that match that type (e.g., starting with '[Student]' or '[Professor]') and then count only those identified documents.\n"
-        "When listing names or items, YOU MUST present each item on a separate line. Start each line with a hyphen and a space ('- '). If relevant, include details like department in parentheses. Example format:\n- Name1 (Department1)\n- Name2 (Department2)\n- Name3 (Department3)"
+        "When listing names or items, YOU MUST present each item on a separate line. "
+        "Start each line with a hyphen and a space ('- '). If relevant, include details like department in parentheses. "
+        "Example format:\n- Name1 (Department1)\n- Name2 (Department2)\n- Name3 (Department3)"
+        "If the question asks about marks, extract and state the marks clearly. "
+        "For example, if asked 'How many marks did I score in Thermodynamics?', "
+        "locate the row containing 'Thermodynamics' and return the marks value along with a sentence like 'You scored X marks in Thermodynamics.'\n"
     )
     role_specific_instructions = ""
     if current_user and current_user.get("role") == "HOD":

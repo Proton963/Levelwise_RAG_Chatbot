@@ -2,15 +2,17 @@ import os
 import datetime
 import streamlit as st
 import traceback
+from pymongo import MongoClient
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 # from langchain_groq import ChatGroq
 from langchain.retrievers import EnsembleRetriever
+from langchain_community.vectorstores import FAISS
 from mongo_handler.mongo_handler import load_or_create_faiss_indexes
 from chat_manager.chat_manager import (
-    build_chat_history, get_prompt_components, 
-    create_history_aware_retriever_chain_component, create_qa_chain_component 
+    build_chat_history, get_prompt_components,
+    create_history_aware_retriever_chain_component, create_qa_chain_component
 )
 from ui.ui import (
     login_page,
@@ -21,12 +23,16 @@ from ui.ui import (
     update_sidebar_status,
     display_project_title_and_logo,
     display_chat_history,
-    display_chat_message
+    display_chat_message,
+    display_marks_upload_section_sidebar
 )
-# from access_control.access_control import store_uploaded_file
+from access_control.access_control import upload_marks_file_to_gridfs, get_latest_marks_file_for_department
 from embedding_manager.embedding_manager import process_uploaded_file_to_faiss
 from pydantic import SecretStr
-from typing import Any, Dict    
+from typing import Any, Dict, Optional
+
+# Define the directory where FAISS indexes are stored (should match embedding_manager.py)
+FAISS_INDEX_DIR = "./faiss_indexes"
 
 # -----------------------------------------------------------------------------
 # 1. Login Section: Show login page if not logged in.
@@ -45,6 +51,8 @@ load_dotenv()
 google_api_key = os.getenv("GOOGLE_API_KEY")
 mongo_uri = os.getenv("MONGO_URI")
 mongo_db_name = os.getenv("MONGO_DB_NAME", "collegeDB")
+client = MongoClient(mongo_uri)
+db = client[mongo_db_name]
 
 if not google_api_key:
     st.error("GROQ_API_KEY environment variable not found. Please set it.")
@@ -77,8 +85,8 @@ all_mongodb_indexes = load_or_create_faiss_indexes(
     mongo_uri=mongo_uri,
     mongo_db_name=mongo_db_name,
     collections_to_index=collections_to_index,
-    _embedding_model=embedding_model, # Use normal name in call
-    _splitter=splitter              # Use normal name in call
+    _embedding_model=embedding_model,  # Use normal name in call
+    _splitter=splitter  # Use normal name in call
 )
 print(f"DEBUG: Indexes returned from mongo_handler: {list(all_mongodb_indexes.keys())}")
 
@@ -103,9 +111,9 @@ print("DEBUG: Filtered indexes based on user role:", filtered_indexes)
 # 7. Build Retrievers with Department Filter (applied after caching)
 # -----------------------------------------------------------------------------
 print("DEBUG: --- Setting up Retrievers (Section 7) ---")
-retrievers = [] # Initialize list to hold all retrievers
-DEFAULT_RETRIEVER_K = 20 # Default K for broader MongoDB search
-UPLOADED_DOC_K = 5 # K for uploaded doc search (can be different)
+retrievers = []  # Initialize list to hold all retrievers
+DEFAULT_RETRIEVER_K = 20  # Default K for broader MongoDB search
+UPLOADED_DOC_K = 10  # K for uploaded doc search (can be different)
 
 user_role = current_user.get("role")
 user_dept = current_user.get("department")
@@ -118,7 +126,7 @@ for key, vs in filtered_indexes.items():
     if vs is not None:
         # Initialize search_kwargs with default K
         # Note: Assuming HOD might need higher K, adjust if using single DEFAULT_RETRIEVER_K
-        current_k = DEFAULT_RETRIEVER_K # Start with default
+        current_k = DEFAULT_RETRIEVER_K  # Start with default
         # Example: If HOD needs more from MongoDB specifically
         # if user_role == "HOD":
         #    current_k = HOD_RETRIEVER_K # Defined elsewhere
@@ -128,15 +136,21 @@ for key, vs in filtered_indexes.items():
         # Determine if Filter needs to be applied (for non-HOD roles)
         apply_filter = False
         if user_role in ["Student", "Professor"] and key in ["students", "professors"]:
-             if user_dept:
-                 search_kwargs["filter"] = {"department": user_dept}
-                 apply_filter = True
-                 print(f"DEBUG: Applying department filter '{user_dept}' for role '{user_role}' on index '{key}'. Final kwargs: {search_kwargs}")
-             else:
-                 print(f"WARN: Role '{user_role}' needs department for filtering '{key}'. No filter applied. Kwargs: {search_kwargs}")
+            if user_dept:
+                search_kwargs["filter"] = {"department": user_dept}
+                apply_filter = True
+                print(
+                    f"DEBUG: Applying department filter '{user_dept}' for role '{user_role}' on index '{key}'. "
+                    f"Final kwargs: {search_kwargs}")
+            else:
+                print(
+                    f"WARN: Role '{user_role}' needs department for filtering '{key}'. No filter applied. Kwargs: "
+                    f"{search_kwargs}")
         else:
             # No filter for HOD or other combinations
-            print(f"DEBUG: No department filter needed for role '{user_role}' on index '{key}'. Using kwargs: {search_kwargs}")
+            print(
+                f"DEBUG: No department filter needed for role '{user_role}' on index '{key}'. Using kwargs: "
+                f"{search_kwargs}")
 
         # Create and add the retriever for this MongoDB index
         try:
@@ -144,10 +158,9 @@ for key, vs in filtered_indexes.items():
             retrievers.append(retriever)
             print(f"DEBUG: Successfully created retriever for MongoDB index '{key}'.")
         except Exception as e:
-             print(f"ERROR: Failed to create retriever for MongoDB index '{key}': {e}")
-             traceback.print_exc() # Added traceback for detail
+            print(f"ERROR: Failed to create retriever for MongoDB index '{key}': {e}")
+            traceback.print_exc()  # Added traceback for detail
 # --- End MongoDB Retriever Loop ---
-
 
 # --- ADDED: Create Retriever for Uploaded Document (If Exists in Session) ---
 print("DEBUG: Checking for uploaded document vector store in session state...")
@@ -156,21 +169,51 @@ if "uploaded_doc_vs" in st.session_state and st.session_state.uploaded_doc_vs is
     try:
         # Create a retriever for the uploaded document's vector store
         uploaded_doc_retriever = st.session_state.uploaded_doc_vs.as_retriever(
-            search_kwargs={'k': UPLOADED_DOC_K} # Use specific K for uploaded docs
+            search_kwargs={'k': UPLOADED_DOC_K}  # Use specific K for uploaded docs
         )
         # Add it to the list of retrievers
         retrievers.append(uploaded_doc_retriever)
-        print(f"DEBUG: Successfully created and added retriever for uploaded document (k={UPLOADED_DOC_K}).")
+        print(
+            f"DEBUG: Successfully created and added retriever for uploaded document (k={UPLOADED_DOC_K}).")
     except Exception as e:
         print(f"ERROR: Failed to create retriever for uploaded document: {e}")
-        traceback.print_exc() # Added traceback
+        traceback.print_exc()  # Added traceback
 else:
-     print("DEBUG: No uploaded document vector store found in session state.")
+    print("DEBUG: No uploaded document vector store found in session state.")
+
+# --- ADDED: Create Retriever for Uploaded Marks File (If Exists in Session) ---
+# --- Load Marks Index from Disk (if available) and Create Retriever ---
+if st.session_state.current_user.get("role") == "Student":
+    student_dept = st.session_state.current_user.get("department")
+    index_filename = f"marks_index_{student_dept}.faiss"
+    index_path = os.path.join(FAISS_INDEX_DIR, index_filename)
+
+    if os.path.exists(index_path):
+        try:
+            print(f"DEBUG: Loading marks index from disk: {index_path}")
+            marks_index = FAISS.load_local(index_path, embedding_model, allow_dangerous_deserialization=True)  # Load with embedding model
+            if marks_index:
+                print("DEBUG: Marks index loaded successfully. Creating retriever...")
+                marks_retriever = marks_index.as_retriever(
+                    search_kwargs={'k': UPLOADED_DOC_K}  # Adjust K if needed
+                )
+                retrievers.append(marks_retriever)
+                print("DEBUG: Marks retriever created and added.")
+                st.session_state.marks_index_loaded = True  # Flag for UI
+            else:
+                print("WARN: Marks index loaded from disk was None.")
+                st.session_state.marks_index_loaded = False
+        except Exception as e:
+            print(f"ERROR: Failed to load or create marks retriever: {e}")
+            traceback.print_exc()
+            st.session_state.marks_index_loaded = False
+    else:
+        print(f"DEBUG: No marks index found on disk at: {index_path}")
+        st.session_state.marks_index_loaded = False
 # --- END ADDED ---
 
-
 # --- Create the EnsembleRetriever ---
-ensemble_retriever = None # Initialize as None
+ensemble_retriever = None  # Initialize as None
 if not retrievers:
     # Only show error if NO retrievers were created at all
     st.error("No data sources available (MongoDB or Uploaded File). Cannot answer questions.")
@@ -195,22 +238,47 @@ display_project_title_and_logo(logo_path)
 # -----------------------------------------------------------------------------
 # 9. Sidebar: File Upload with Metadata Storage
 # -----------------------------------------------------------------------------
+if st.session_state.current_user.get("role") in ["Professor", "HOD"]:
+    result = display_marks_upload_section_sidebar()  # New marks uploader in the sidebar
+    if result is not None:
+        marks_file, subject = result
+        try:
+            # Assuming your db object is already available in app.py
+            file_id = upload_marks_file_to_gridfs(marks_file, st.session_state.current_user, subject)
+            st.sidebar.success(f"Marks file uploaded successfully! File ID: {file_id}")
+            # Process the file into a FAISS index and save to disk:
+            from embedding_manager.embedding_manager import process_uploaded_file_to_faiss
+            faiss_index = process_uploaded_file_to_faiss(
+                marks_file,
+                embedding_model,
+                splitter,
+                st.session_state.current_user.get("role"),  # Pass user role
+                st.session_state.current_user.get("department") # Pass user department
+            )
+            if faiss_index:
+                #  st.session_state.uploaded_marks_vs = faiss_index # No longer needed - saved to disk
+                st.sidebar.info("Marks file processed and saved.")
+            else:
+                st.sidebar.error("Failed to create FAISS index from the marks file.")
+        except Exception as e:
+            st.sidebar.error(f"Marks file upload failed: {e}")
+
 st.sidebar.header("Document Q&A")
 uploaded_file = st.sidebar.file_uploader(
-     "Upload PDF, TXT, DOCX, CSV, XLSX",
-     type=["pdf", "txt", "docx", "csv", "xlsx"],
-     key="file_uploader_key" # Use a unique key
+    "Upload your Documents",
+    type=["pdf", "txt", "docx", "csv", "xlsx"],
+    key="file_uploader_key"  # Use a unique key
 )
 
 # Clear related session state if file is removed or changed
 if uploaded_file is None:
     if "processed_file_id" in st.session_state:
-         print("DEBUG: Clearing uploaded file session state as file is removed.")
-         del st.session_state["processed_file_id"]
+        print("DEBUG: Clearing uploaded file session state as file is removed.")
+        del st.session_state["processed_file_id"]
     if "uploaded_doc_vs" in st.session_state:
-         del st.session_state["uploaded_doc_vs"]
-         # Optional: Rerun if you want the retriever to update immediately on file removal
-         # st.rerun()
+        del st.session_state["uploaded_doc_vs"]
+        # Optional: Rerun if you want the retriever to update immediately on file removal
+        # st.rerun()
 
 if uploaded_file is not None:
     file_name = uploaded_file.name
@@ -224,24 +292,26 @@ if uploaded_file is not None:
         try:
             # Ensure embedding_model and splitter are available (should be from Section 4)
             if 'embedding_model' not in locals() or embedding_model is None:
-                 raise ValueError("Embedding model is not ready.")
+                raise ValueError("Embedding model is not ready.")
             if 'splitter' not in locals() or splitter is None:
-                 raise ValueError("Text splitter is not ready.")
+                raise ValueError("Text splitter is not ready.")
 
             # Call the function from embedding_manager to handle all processing
             with st.spinner(f"Processing {file_name}... Please wait."):
-                 faiss_index = process_uploaded_file_to_faiss(
-                      uploaded_file,
-                      embedding_model,
-                      splitter
-                 )
+                faiss_index = process_uploaded_file_to_faiss(
+                    uploaded_file,
+                    embedding_model,
+                    splitter,
+                    st.session_state.current_user.get("role"), # Pass user role
+                    st.session_state.current_user.get("department") # Pass user department
+                )
 
             if faiss_index:
                 # Store the created index in session state
                 st.session_state.uploaded_doc_vs = faiss_index
                 # Mark this specific file instance as processed
                 st.session_state.processed_file_id = session_file_id
-                st.session_state.processed_file_name = file_name # Store name if needed for display
+                st.session_state.processed_file_name = file_name  # Store name if needed for display
                 st.sidebar.success(f"✅ '{file_name}' processed and ready!")
                 print(f"DEBUG: Index for '{file_name}' received from embedding_manager.")
                 # IMPORTANT: Rerun the script to update the ensemble_retriever (in Section 7)
@@ -249,7 +319,7 @@ if uploaded_file is not None:
             else:
                 st.sidebar.error(f"Failed to process '{file_name}'. Check logs.")
                 # Clear potentially outdated state
-                st.session_state.uploaded_doc_vs = None
+                st.session_state["uploaded_doc_vs"] = None
                 st.session_state.processed_file_id = None
 
         except Exception as e:
@@ -257,7 +327,7 @@ if uploaded_file is not None:
             print(f"ERROR processing file '{file_name}': {e}")
             traceback.print_exc()
             # Clear state on error
-            st.session_state.uploaded_doc_vs = None
+            st.session_state["uploaded_doc_vs"] = None
             st.session_state.processed_file_id = None
     else:
         # File already processed in this session, do nothing or show confirmation
@@ -317,10 +387,11 @@ if user_input:
             # ----------------------------------------------------------
 
             # 4. Post-Retrieval Filtering (Logic stays in app.py for orchestration)
-            filtered_docs = docs # Default to using all retrieved docs
+            filtered_docs = docs  # Default to using all retrieved docs
             query_lower = user_input.lower()
             is_student_query = "student" in query_lower or "students" in query_lower
             is_prof_query = "professor" in query_lower or "professors" in query_lower
+            is_marks_query = "marks" in query_lower
 
             # Apply filter only if the query is clearly about one type and not both
             if is_student_query and not is_prof_query:
@@ -331,8 +402,9 @@ if user_input:
                 print("DEBUG: Filtering retrieved docs for '[Professor]' content...")
                 filtered_docs = [doc for doc in docs if doc.page_content.strip().startswith("[Professor]")]
                 print(f"DEBUG: Kept {len(filtered_docs)} professor documents after filtering.")
+            # No specific filtering for marks query at this stage, the retriever should handle it
             else:
-                # No specific filtering if query is ambiguous, general, or mentions both
+                # No specific student/professor filtering if query is ambiguous, general, or mentions both
                 print("DEBUG: No specific student/professor filtering applied based on query keywords.")
 
             # 5. Handle No Documents Found After Filtering
@@ -349,9 +421,9 @@ if user_input:
                 print(f"DEBUG: Invoking QA chain with {len(filtered_docs)} documents...")
                 # create_stuff_documents_chain returns the final answer string directly
                 answer = qa_chain.invoke({
-                    "input": user_input, # Pass original user input
-                    "chat_history": chat_history, # Pass chat history for context
-                    "context": filtered_docs # Pass the filtered documents
+                    "input": user_input,  # Pass original user input
+                    "chat_history": chat_history,  # Pass chat history for context
+                    "context": filtered_docs  # Pass the filtered documents
                 })
                 print(f"DEBUG: QA chain invocation complete. Answer preview: {answer[:100]}...")
 
@@ -367,9 +439,12 @@ if user_input:
     else:
         # Handle missing essential components like retriever, llm, or user info
         missing = []
-        if ensemble_retriever is None: missing.append("Retriever")
-        if llm is None: missing.append("LLM")
-        if current_user is None: missing.append("User Info")
+        if ensemble_retriever is None:
+            missing.append("Retriever")
+        if llm is None:
+            missing.append("LLM")
+        if current_user is None:
+            missing.append("User Info")
         error_msg = f"Cannot process query due to missing components: {', '.join(missing)}"
         st.error(error_msg)
         print(f"ERROR: {error_msg}")
