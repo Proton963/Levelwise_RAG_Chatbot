@@ -26,6 +26,7 @@ def get_prompt_components(current_user: Dict[str, Any]) -> Tuple[str, str]:
     # Use the latest refined base instructions
     base_instructions = (
         "Answer strictly based on the provided context documents.\n"
+        "If a question is asked about uploaded document, provide detailed answer based on the content of that document.\n"
         "If the question asks 'how many' or for a count, accurately count the relevant items based *only* on the documents provided in the context. "
         "State the count clearly in a complete sentence (e.g., 'Based on the provided documents, there are X students.' or 'There are Y professors in the provided context.').\n"
         "When asked to count specific items (like 'students' or 'professors'), first identify the documents in the context that match that type (e.g., starting with '[Student]' or '[Professor]') and then count only those identified documents.\n"
